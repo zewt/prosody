@@ -8,6 +8,10 @@
 
 
 local httpserver = require "net.httpserver";
+local os = os;
+local string = string;
+local lfs;
+pcall(function () lfs = require "lfs" end)
 
 local open = io.open;
 local t_concat = table.concat;
@@ -48,6 +52,12 @@ local function preprocess_path(path)
 end
 
 function serve_file(path)
+	if lfs then
+		local stat = lfs.attributes(http_base..path) or {}
+		if stat.mode == "directory" then
+			return serve_file(path.."/index.html")
+		end
+	end
 	local f, err = open(http_base..path, "rb");
 	if not f then return response_404; end
 	local data = f:read("*a");
