@@ -176,6 +176,7 @@ local function request_reader(request, data, startpos)
 		end
 	elseif request.state == "request" then
 		log("debug", "Reading request line...")
+                request.handled = false;
 		local method, path, http, linelen = data:match("^(%S+) (%S+) HTTP/(%S+)\r\n()", startpos);
 		if not method then
 			log("warn", "Invalid HTTP status line, telling callback then closing");
