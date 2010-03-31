@@ -17,6 +17,7 @@ local open = io.open;
 local t_concat = table.concat;
 
 local http_base = config.get("*", "core", "http_path") or "www_files";
+local http_log = config.get("*", "core", "http_log")
 
 local response_400 = { status = "400 Bad Request", body = "<h1>Bad Request</h1>Sorry, we didn't understand your request :(" };
 local response_403 = { status = "403 Forbidden", body = "<h1>Forbidden</h1>You don't have permission to view the contents of this directory :(" };
@@ -32,6 +33,8 @@ local mime_map = {
 	js = "text/javascript";
 	css = "text/css";
 };
+
+local logfile
 
 local function preprocess_path(path)
 	if path:sub(1,1) ~= "/" then
@@ -51,15 +54,40 @@ local function preprocess_path(path)
 	return path;
 end
 
-function serve_file(path)
+local function log_common(request, status, size)
+	if not logfile then
+           return
+        end
+
+	local ip = request.handler:ip();
+	local req = string.format("%s %s HTTP/%s", request.method, request.url.path, request.httpversion);
+	local date = os.date("%d/%m/%Y:%H:%M:%S %z");
+	size = size or "-";
+	local ent = string.format("%s - - [%s] \"%s\" %d %s\n", ip, date, req, status, tostring(size))
+
+        logfile:write(ent)
+end
+
+local function reopen_log_files()
+	if logfile then
+		logfile:close()
+	end
+
+	logfile = open(http_log, "a")
+end
+
+function serve_file(request, path)
 	if lfs then
 		local stat = lfs.attributes(http_base..path) or {}
 		if stat.mode == "directory" then
-			return serve_file(path.."/index.html")
+			return serve_file(request, path.."/index.html")
 		end
 	end
 	local f, err = open(http_base..path, "rb");
-	if not f then return response_404; end
+	if not f then
+		log_common(request, 404);
+		return response_404;
+	end
 	local data = f:read("*a");
 	f:close();
 	if not data then
@@ -67,6 +95,7 @@ function serve_file(path)
 	end
 	local ext = path:match("%.([^.]*)$");
 	local mime = mime_map[ext]; -- Content-Type should be nil when not known
+        log_common(request, 200, #data);
 	return {
 		headers = { ["Content-Type"] = mime; };
 		body = data;
@@ -75,21 +104,31 @@ end
 
 local function handle_file_request(method, body, request)
 	local path = preprocess_path(request.url.path);
-	if not path then return response_400; end
+	if not path then
+		log_common(request, 400);
+		return response_400;
+	end
 	path = path:gsub("^/[^/]+", ""); -- Strip /files/
-	return serve_file(path);
+	return serve_file(request, path);
 end
 
 local function handle_default_request(method, body, request)
 	local path = preprocess_path(request.url.path);
-	if not path then return response_400; end
-	return serve_file(path);
+	if not path then
+		log_common(request, 400);
+		return response_400;
+	end
+	return serve_file(request, path);
 end
 
 local function setup()
 	local ports = config.get(module.host, "core", "http_ports") or { 5280 };
 	httpserver.set_default_handler(handle_default_request);
 	httpserver.new_from_config(ports, handle_file_request, { base = "files" });
+	if http_log then
+		reopen_log_files()
+		eventmanager.add_event_hook("reopen-log-files", reopen_log_files)
+	end
 end
 if prosody.start_time then -- already started
 	setup();
