@@ -24,7 +24,7 @@ local response_403 = { status = "403 Forbidden", body = "<h1>Forbidden</h1>You d
 local response_404 = { status = "404 Not Found", body = "<h1>Page Not Found</h1>Sorry, we couldn't find what you were looking for :(" };
 
 -- TODO: Should we read this from /etc/mime.types if it exists? (startup time...?)
-local mime_map = {
+local mime_map = config.get("*", "core", "mime_types") or {
 	html = "text/html";
 	htm = "text/html";
 	xml = "text/xml";
