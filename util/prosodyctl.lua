@@ -70,11 +70,11 @@ function getpid()
 		return false, "pidfile-read-failed", err;
 	end
 	
-	local locked, err = lfs.lock(file, "w");
-	if locked then
-		file:close();
-		return false, "pidfile-not-locked";
-	end
+	-- local locked, err = lfs.lock(file, "w");
+	-- if locked then
+	-- 	file:close();
+	-- 	return false, "pidfile-not-locked";
+	-- end
 	
 	local pid = tonumber(file:read("*a"));
 	file:close();
