@@ -134,23 +134,15 @@ function handle_request(method, body, request)
 		local r = session.requests;
 		log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 		log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
-		if #r > session.bosh_hold then
-			-- We are holding too many requests, send what's in the buffer,
-			log("debug", "We are holding too many requests, so...");
-			if #session.send_buffer > 0 then
-				log("debug", "...sending what is in the buffer")
-				session.send(t_concat(session.send_buffer));
-				session.send_buffer = {};
-			else
-				-- or an empty response
-				log("debug", "...sending an empty response");
-				session.send("");
-			end
-		elseif #session.send_buffer > 0 then
+		if #session.send_buffer > 0 then
 			log("debug", "Session has data in the send buffer, will send now..");
 			local resp = t_concat(session.send_buffer);
 			session.send_buffer = {};
 			session.send(resp);
+		elseif #r > session.bosh_hold then
+			-- We are holding too many requests; release the oldest.
+			log("debug", "We are holding too many requests, sending an empty response");
+			session.send("");
 		end
 		
 		if not request.destroyed then
