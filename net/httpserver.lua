@@ -31,6 +31,18 @@ module "httpserver"
 local default_handler;
 
 local function send_response(request, response)
+	if request.handled then return; end
+	request.handled = true;
+
+	local connection_close = true;
+	local response_http_version = "HTTP/1.0";
+	if request.httpversion == "1.1" then
+		response_http_version = "HTTP/1.1";
+		connection_close = (request.headers["connection"] == "close");
+	end
+	log("debug", "HTTP version is " .. response_http_version);
+	log("debug", "HTTP keepalives are " .. (connection_close and "disabled" or "enabled"));
+
 	-- Write status line
 	local body, headers;
 	if response.body or response.headers then
@@ -40,7 +52,6 @@ local function send_response(request, response)
 		-- Response we have is just a string (the body)
 		log("debug", "Sending 200 response to %s", request.id or "<none>");
 		headers = {
-			["Connection"] = "close",
 			["Content-Type"] = "text/html",
 			["Content-Length"] = #response
 		};
@@ -48,11 +59,14 @@ local function send_response(request, response)
 	end
 
 	log("debug", "Sending response to %s", request.id);
-	local resp = { "HTTP/1.0 "..(response.status or "200 OK").."\r\n" };
+	local resp = { response_http_version .. " "..(response.status or "200 OK").."\r\n" };
 	if headers then
 		for k, v in pairs(headers) do
 			t_insert(resp, k..": "..v.."\r\n");
 		end
+	end
+	if connection_close and response_http_version == "HTTP/1.1" then
+		t_insert(resp, "Connection: close\r\n");
 	end
 	if body and not (headers and headers["Content-Length"]) then
 		t_insert(resp, "Content-Length: "..#body.."\r\n");
@@ -64,14 +78,12 @@ local function send_response(request, response)
 	end
 	request.write(t_concat(resp));
 
-	if not request.stayopen then
+	if connection_close then
 		request:destroy();
 	end
 end
 
 local function call_callback(request, err)
-	if request.handled then return; end
-	request.handled = true;
 	local callback = request.callback;
 	if not callback and request.path then
 		local path = request.url.path;
@@ -88,10 +100,7 @@ local function call_callback(request, err)
 			local ok, result = xpcall(function() return _callback(method, body, request) end, debug_traceback);
 			if ok then return result; end
 			log("error", "Error in HTTP server handler: %s", result);
-			-- TODO: When we support pipelining, request.destroyed
-			-- won't be the right flag - we just want to see if there
-			-- has been a response to this request yet.
-			if not request.destroyed then
+			if not request.handled then
 				return {
 					status = "500 Internal Server Error";
 					headers = { ["Content-Type"] = "text/plain" };
@@ -125,18 +134,18 @@ local function call_callback(request, err)
 	end
 end
 
-local function request_reader(request, data, startpos)
+local function request_reader(request, data)
 	if not request.parser then
 		local function success_cb(r)
-			for k,v in pairs(r) do request[k] = v; end
-			request.url = url_parse(request.path);
-			request.url.path = request.url.path and request.url.path:gsub("%%(%x%x)", function(x) return x.char(tonumber(x, 16)) end);
-			request.body = { request.body };
-			call_callback(request);
+			for k,v in pairs(request) do r[k] = v; end
+			r.url = url_parse(r.path);
+			r.url.path = r.url.path and r.url.path:gsub("%%(%x%x)", function(x) return x.char(tonumber(x, 16)) end);
+			r.body = { r.body };
+			call_callback(r);
 		end
 		local function error_cb(r)
-			call_callback(request, r or "connection-closed");
-			destroy_request(request);
+			call_callback(connection, r or "connection-closed");
+			destroy_connection(connection);
 		end
 		request.parser = httpstream_new(success_cb, error_cb);
 	end
