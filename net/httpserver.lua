@@ -111,7 +111,7 @@ local function call_callback(request, err)
 		if err then
 			log("debug", "Request error: "..err);
 			if not callback(nil, err, request) then
-				destroy_request(request);
+				destroy_connection(request);
 			end
 			return;
 		end
@@ -124,20 +124,20 @@ local function call_callback(request, err)
 			elseif response ~= true then
 				-- Assume response
 				send_response(request, response);
-				destroy_request(request);
+				destroy_connection(request);
 			end
 		else
 			log("debug", "Request handler provided no response, destroying request...");
 			-- No response, close connection
-			destroy_request(request);
+			destroy_connection(request);
 		end
 	end
 end
 
-local function request_reader(request, data)
-	if not request.parser then
+local function request_reader(connection, data)
+	if not connection.parser then
 		local function success_cb(r)
-			for k,v in pairs(request) do r[k] = v; end
+			for k,v in pairs(connection) do r[k] = v; end
 			r.url = url_parse(r.path);
 			r.url.path = r.url.path and r.url.path:gsub("%%(%x%x)", function(x) return x.char(tonumber(x, 16)) end);
 			r.body = { r.body };
@@ -147,9 +147,9 @@ local function request_reader(request, data)
 			call_callback(connection, r or "connection-closed");
 			destroy_connection(connection);
 		end
-		request.parser = httpstream_new(success_cb, error_cb);
+		connection.parser = httpstream_new(success_cb, error_cb);
 	end
-	request.parser:feed(data);
+	connection.parser:feed(data);
 end
 
 -- The default handler for requests
@@ -161,17 +161,17 @@ default_handler = function (method, body, request)
 end
 
 
-function new_request(handler)
+function new_connection(handler)
 	return { handler = handler, conn = handler,
 			write = function (...) return handler:write(...); end, state = "request",
 			server = http_servers[handler:serverport()],
 			send = send_response,
-			destroy = destroy_request,
+			destroy = destroy_connection,
 			id = tostring{}:match("%x+$")
 			 };
 end
 
-function destroy_request(request)
+function destroy_connection(request)
 	log("debug", "Destroying request %s", request.id);
 	listener = listener or connlisteners_get("httpserver");
 	if not request.destroyed then
