@@ -32,39 +32,38 @@ local default_handler;
 
 local function send_response(request, response)
 	-- Write status line
-	local resp;
+	local body, headers;
 	if response.body or response.headers then
-		local body = response.body and tostring(response.body);
-		log("debug", "Sending response to %s", request.id);
-		resp = { "HTTP/1.0 "..(response.status or "200 OK").."\r\n" };
-		local h = response.headers;
-		if h then
-			for k, v in pairs(h) do
-				t_insert(resp, k..": "..v.."\r\n");
-			end
-		end
-		if body and not (h and h["Content-Length"]) then
-			t_insert(resp, "Content-Length: "..#body.."\r\n");
-		end
-		t_insert(resp, "\r\n");
-		
-		if body and request.method ~= "HEAD" then
-			t_insert(resp, body);
-		end
-		request.write(t_concat(resp));
+		body = response.body and tostring(response.body);
+		headers = response.headers;
 	else
 		-- Response we have is just a string (the body)
 		log("debug", "Sending 200 response to %s", request.id or "<none>");
-		
-		local resp = "HTTP/1.0 200 OK\r\n"
-			.. "Connection: close\r\n"
-			.. "Content-Type: text/html\r\n"
-			.. "Content-Length: "..#response.."\r\n"
-			.. "\r\n"
-			.. response;
-		
-		request.write(resp);
+		headers = {
+			["Connection"] = "close",
+			["Content-Type"] = "text/html",
+			["Content-Length"] = #response
+		};
+		body = response;
 	end
+
+	log("debug", "Sending response to %s", request.id);
+	local resp = { "HTTP/1.0 "..(response.status or "200 OK").."\r\n" };
+	if headers then
+		for k, v in pairs(headers) do
+			t_insert(resp, k..": "..v.."\r\n");
+		end
+	end
+	if body and not (headers and headers["Content-Length"]) then
+		t_insert(resp, "Content-Length: "..#body.."\r\n");
+	end
+	t_insert(resp, "\r\n");
+
+	if body and request.method ~= "HEAD" then
+		t_insert(resp, body);
+	end
+	request.write(t_concat(resp));
+
 	if not request.stayopen then
 		request:destroy();
 	end
