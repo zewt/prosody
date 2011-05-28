@@ -293,6 +293,15 @@ process_request = function(request, session)
 	local stanzas = request.stanzas;
 	request.stanzas = {};
 	table.insert(session.outbound_requests, request);
+
+	if session.notopen then
+		session.notopen = nil;
+		local features = st.stanza("stream:features");
+		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
+		fire_event("stream-features", session, features);
+		session.send(features);
+	end
+
 	for idx, stanza in ipairs(stanzas) do
 		log("debug", "processing " .. tostring(idx) .. "...");
 		core_process_stanza(session, stanza);
@@ -307,14 +316,7 @@ process_request = function(request, session)
 	local r = session.outbound_requests;
 	log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 	log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
-	if session.notopen then
-		log("debug", "Session isn't open; sending features");
-		local features = st.stanza("stream:features");
-		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
-		fire_event("stream-features", session, features);
-		session.send(features);
-		session.notopen = nil;
-	elseif #session.send_buffer > 0 and not request.attr.pause then
+	if #session.send_buffer > 0 and not request.attr.pause then
 		-- If we have data waiting to be sent, send it.  If this is a pause request, don't;
 		-- responses to pause requests must not contain any stanzas.
 		log("debug", "Session has data in the send buffer, will send now..");
