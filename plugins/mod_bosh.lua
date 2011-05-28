@@ -29,10 +29,10 @@ local xmlns_bosh = "http://jabber.org/protocol/httpbind"; -- (hard-coded into a 
 local stream_callbacks = {
 	stream_ns = xmlns_bosh, stream_tag = "body", default_ns = "jabber:client" };
 
-local BOSH_DEFAULT_HOLD = tonumber(module:get_option("bosh_default_hold")) or 1;
+local BOSH_DEFAULT_HOLD = tonumber(module:get_option("bosh_default_hold")) or 3;
 local BOSH_DEFAULT_INACTIVITY = tonumber(module:get_option("bosh_max_inactivity")) or 60;
 local BOSH_DEFAULT_POLLING = tonumber(module:get_option("bosh_max_polling")) or 5;
-local BOSH_DEFAULT_REQUESTS = tonumber(module:get_option("bosh_max_requests")) or 2;
+local BOSH_DEFAULT_REQUESTS = tonumber(module:get_option("bosh_max_requests")) or 5;
 
 -- The maximum number of responses to store for rerequesting.  Clients shouldn't need
 -- to request more requests than they can open simultaneously, so keep up to REQUESTS.
