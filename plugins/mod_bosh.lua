@@ -122,6 +122,7 @@ local function terminateWithError(request, session, errorCondition)
 end
 
 local process_request;
+local create_session;
 function handle_request(method, body, request)
 	if (not body) or request.method ~= "POST" then
 		if request.method == "OPTIONS" then
@@ -141,21 +142,31 @@ function handle_request(method, body, request)
 	request.notopen = true;
 	request.log = log;
 	request.on_destroy = on_destroy_request;
+	request.stanzas = {};
 	
 	local stream = new_xmpp_stream(request, stream_callbacks);
 	-- stream:feed() calls the stream_callbacks, so all stanzas in
 	-- the body are processed in this next line before it returns.
 	stream:feed(body);
-	
-	-- If none of the requests established a session, stop.
-	local session = sessions[request.sid];
+
+	if not request.attr.sid then
+		create_session(request);
+		return true;
+	end
+
+	local sid = request.attr.sid;
+	local session = sessions[sid];
 	if not session then
+		-- Unknown sid
+		log("info", "Client tried to use sid '%s' which we don't know about", sid);
+		request:send{ headers = default_headers, body = tostring(st.stanza("body", { xmlns = xmlns_bosh, type = "terminate", condition = "item-not-found" })) };
 		return true;
 	end
 	
-	if not request.attr.sid then
-		-- If this was a session creation request, we've already sent a response.
-		return true;
+	if request.attr.type == "terminate" then
+		-- Client wants to end this session, which we'll do
+		-- after processing any stanzas in this request
+		session.bosh_terminate = true;
 	end
 
 	-- Check that the RID of this request isn't too far in the future (sec14.2).
@@ -338,7 +349,7 @@ local function bosh_close_stream(session, reason)
 	sm_destroy_session(session);
 end
 
-local function create_session(request)
+create_session = function(request)
 	-- New session request
 	local attr = request.attr;
 	local sid = attr.sid
@@ -434,36 +445,16 @@ local function create_session(request)
 		["xmlns:stream"] = "http://etherx.jabber.org/streams"
 	}):add_child(features);
 	request:send{ headers = default_headers, body = tostring(response) };
+	return;
 end
 
 function stream_callbacks.streamopened(request, attr)
 	log("debug", "BOSH body open (sid: %s)", attr.sid);
-	local sid = attr.sid
 	request.rid = tonumber(attr.rid);
-	request.sid = sid;
-	request.stanzas = {};
+	request.sid = attr.sid;
 	request.attr = attr;
 
 	request.notopen = nil; -- Signals that we accept this opening tag
-
-	if not sid then
-		create_session(request);
-		return;
-	end
-	
-	local session = sessions[sid];
-	if not session then
-		-- Unknown sid
-		log("info", "Client tried to use sid '%s' which we don't know about", sid);
-		request:send{ headers = default_headers, body = tostring(st.stanza("body", { xmlns = xmlns_bosh, type = "terminate", condition = "item-not-found" })) };
-		return;
-	end
-	
-	if attr.type == "terminate" then
-		-- Client wants to end this session, which we'll do
-		-- after processing any stanzas in this request
-		session.bosh_terminate = true;
-	end
 end
 
 function stream_callbacks.handlestanza(request, stanza)
