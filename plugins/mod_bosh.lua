@@ -86,7 +86,7 @@ local inactive_sessions = {}; -- Sessions which have no open requests
 
 -- Used to respond to idle sessions (those with waiting requests)
 local waiting_requests = {};
-function on_destroy_request(request)
+function on_destroy_connection(request)
 	waiting_requests[request] = nil;
 	local session = sessions[request.sid];
 	if session then
@@ -143,7 +143,7 @@ function handle_request(method, body, request)
 	--log("debug", "Handling new request %s: %s\n----------", request.id, tostring(body));
 	request.notopen = true;
 	request.log = log;
-	request.on_destroy = on_destroy_request;
+	request.on_destroy = on_destroy_connection;
 	request.stanzas = {};
 	
 	local stream = new_xmpp_stream(request, stream_callbacks);
@@ -233,7 +233,7 @@ function handle_request(method, body, request)
 	end
 
 	if session.destroyed then
-		return;
+		return true;
 	end
 
 	-- Purge old response history.
