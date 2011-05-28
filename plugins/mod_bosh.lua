@@ -34,6 +34,14 @@ local BOSH_DEFAULT_INACTIVITY = tonumber(module:get_option("bosh_max_inactivity"
 local BOSH_DEFAULT_POLLING = tonumber(module:get_option("bosh_max_polling")) or 5;
 local BOSH_DEFAULT_REQUESTS = tonumber(module:get_option("bosh_max_requests")) or 2;
 
+-- The maximum number of responses to store for rerequesting.  Clients shouldn't need
+-- to request more requests than they can open simultaneously, so keep up to REQUESTS.
+local response_history_size = BOSH_DEFAULT_REQUESTS;
+
+-- The number of requests in the future clients can send.  Within this threshold,
+-- future requests will be buffered until previous requests arrive.
+local request_buffer_size = BOSH_DEFAULT_REQUESTS;
+
 local consider_bosh_secure = module:get_option_boolean("consider_bosh_secure");
 
 local default_headers = { ["Content-Type"] = "text/xml; charset=utf-8" };
@@ -82,22 +90,38 @@ function on_destroy_request(request)
 	waiting_requests[request] = nil;
 	local session = sessions[request.sid];
 	if session then
-		local requests = session.requests;
-		for i,r in ipairs(requests) do
-			if r == request then
-				t_remove(requests, i);
-				break;
+		local function remove_request(t)
+			for i,r in ipairs(t) do
+				if r == request then
+					t_remove(t, i);
+					return;
+				end
 			end
 		end
+		local inbound_requests = session.inbound_requests;
+		remove_request(session.inbound_requests);
+
+		local outbound_requests = session.outbound_requests;
+		remove_request(session.outbound_requests);
 		
 		-- If this session now has no requests open, mark it as inactive
-		if #requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
+		if #inbound_requests == 0 and #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
 			inactive_sessions[session] = os_time();
 			(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
 		end
 	end
 end
 
+local function terminateWithError(request, session, errorCondition)
+	local item_not_found_response = { headers = default_headers,
+		body = "<body type='terminate' condition='" .. errorCondition .. "' xmlns='http://jabber.org/protocol/httpbind'/>"
+	};
+
+	request:send(item_not_found_response);
+	session:close();
+end
+
+local process_request;
 function handle_request(method, body, request)
 	if (not body) or request.method ~= "POST" then
 		if request.method == "OPTIONS" then
@@ -123,15 +147,113 @@ function handle_request(method, body, request)
 	-- the body are processed in this next line before it returns.
 	stream:feed(body);
 	
+	-- If none of the requests established a session, stop.
 	local session = sessions[request.sid];
-	if session then
+	if not session then
+		return true;
+	end
+	
+	if request.created_session then
+		-- If this was a session creation request, we've already sent a response.
+		return true;
+	end
+
+	-- Check that the RID of this request isn't too far in the future (sec14.2).
+	if request.rid - session.previous_rid_processed - 1 > request_buffer_size then
+		session.log("warn", "rid too large; too many requests were lost. Last rid: %d New rid: %s", session.previous_rid_processed, request.rid);
+		terminateWithError(request, session, "item-not-found");
+		return;
+	end
+
+	local function find_insert_pos(rid)
+		-- Return the index to insert rid, to keep inbound_requests sorted by rid.
+		for idx, req in ipairs(session.inbound_requests) do
+			if req.rid ~= nil then
+				if req.rid >= rid then
+					return idx
+				end
+			end
+		end
+		return #session.inbound_requests + 1;
+	end
+
+	-- Add the request to the request queue.
+	local idx = find_insert_pos(request.rid);
+	t_insert(session.inbound_requests, idx, request);
+	log("debug", "inbound now has %i requests", #session.inbound_requests);
+
+	-- Check for completed inbound requests, starting at the beginning of the queue.
+	while not session.destroyed and #session.inbound_requests > 0 do
+		local in_req = session.inbound_requests[1];
+		if in_req.rid > session.previous_rid_processed+1 then
+			log("debug", "rid %i is in the future; not handling it yet", in_req.rid);
+			break;
+		end
+
+		-- This request is ready to be handled.  Remove it from the queue, and process it.
+		log("debug", "handling inbound rid %i", in_req.rid);
+		table.remove(session.inbound_requests, 1);
+
+		if in_req.rid <= session.previous_rid_processed then
+			-- This is an old RID.  It may be a rerequest (XEP-0124 sec14.3).  If we have
+			-- a copy of the requested response, send it again.  Otherwise, terminate the
+			-- session.
+			log("debug", "rid %i is in the past", in_req.rid);
+			local original_response = session.sent_responses.responses[in_req.rid];
+			if original_response == nil then
+				-- The client requested a RID that we no longer have a copy of.
+				terminateWithError(in_req, session, "item-not-found");
+				return true;
+			end
+
+			in_req:send(original_response);
+		else
+			process_request(in_req, session);
+		end
+		log("debug", "continue");
+	end
+
+	if session.destroyed then
+		return;
+	end
+
+	-- Purge old response history.
+	while #session.sent_responses.rids > 0 do
+		local oldest_stored_response_rid = session.sent_responses.rids[1];
+		if oldest_stored_response_rid + response_history_size > session.previous_rid_processed then
+			break
+		end
+		log("debug", "Purging response for rid %i", oldest_stored_response_rid);
+
+		session.sent_responses.responses[oldest_stored_response_rid] = nil;
+		table.remove(session.sent_responses.rids, 1);
+	end
+
+	return true;
+end
+
+-- All stanzas from a request have been received, and this request's
+-- RID is next in line.
+process_request = function(request, session)
+	log("debug", "handle rid %i (next rid is %i)", tostring(request.rid), tostring(session.previous_rid_processed));
+	local stanzas = request.stanzas;
+	request.stanzas = {};
+	session.previous_rid_processed = request.rid;
+	for idx, stanza in ipairs(stanzas) do
+		log("debug", "processing " .. tostring(idx) .. "...");
+		core_process_stanza(session, stanza);
+	end
+
+	session.previous_rid_processed = request.rid
+	table.insert(session.outbound_requests, request);
+
                -- Session was marked as inactive, since we have
                -- a request open now, unmark it
                if inactive_sessions[session] then
                        inactive_sessions[session] = nil;
                end
 
-		local r = session.requests;
+		local r = session.outbound_requests;
 		log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 		log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
 		if #session.send_buffer > 0 then
@@ -143,9 +265,7 @@ function handle_request(method, body, request)
 			-- We are holding too many requests; release the oldest.
 			log("debug", "We are holding too many requests, sending an empty response");
 			session.send("");
-		end
-		
-		if not request.destroyed then
+		else
 			-- We're keeping this request open, to respond later
 			log("debug", "Have nothing to say, so leaving request unanswered for now");
 			if session.bosh_wait then
@@ -154,14 +274,12 @@ function handle_request(method, body, request)
 			end
 		end
 		
+		-- Check if this request terminated the session.
 		if session.bosh_terminate then
-			session.log("debug", "Closing session with %d requests open", #session.requests);
+			log("debug", "Closing session with %d requests open", #session.outbound_requests);
 			session:close();
-			return nil;
-		else
-			return true; -- Inform httpserver we shall reply later
+			return;
 		end
-	end
 end
 
 
@@ -200,8 +318,13 @@ local function bosh_close_stream(session, reason)
 
 	local session_close_response = { headers = default_headers, body = tostring(close_reply) };
 
-	for _, held_request in ipairs(session.requests) do
+	for _, held_request in ipairs(session.outbound_requests) do
 		held_request:send(session_close_response);
+		held_request:destroy();
+	end
+
+	-- If any requests are in the inbound queue, close them without responding.
+	for _, held_request in ipairs(session.inbound_requests) do
 		held_request:destroy();
 	end
 	sessions[session.sid]  = nil;
@@ -211,6 +334,10 @@ end
 function stream_callbacks.streamopened(request, attr)
 	log("debug", "BOSH body open (sid: %s)", attr.sid);
 	local sid = attr.sid
+	local rid = tonumber(attr.rid);
+	request.rid = rid;
+	request.stanzas = {};
+
 	if not sid then
 		-- New session request
 		request.notopen = nil; -- Signals that we accept this opening tag
@@ -228,19 +355,33 @@ function stream_callbacks.streamopened(request, attr)
 		-- New session
 		sid = new_uuid();
 		local session = {
-			type = "c2s_unauthed", conn = {}, sid = sid, rid = tonumber(attr.rid), host = attr.to,
+			type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
 			bosh_version = attr.ver, bosh_wait = attr.wait, streamid = sid,
 			bosh_hold = BOSH_DEFAULT_HOLD, bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
-			requests = { }, send_buffer = {}, reset_stream = bosh_reset_stream,
+			inbound_requests = {},
+			outbound_requests = {},
+			sent_responses = {
+			    responses = {},
+		            rids = {},
+		        },
+			send_buffer = {}, reset_stream = bosh_reset_stream,
 			close = bosh_close_stream, dispatch_stanza = core_process_stanza,
 			log = logger.init("bosh"..sid),	secure = consider_bosh_secure or request.secure,
-			ip = get_ip_from_request(request);
+			ip = get_ip_from_request(request),
+			previous_rid_processed = tonumber(rid),
 		};
+		if attr.hold ~= nil then
+			local hold = tonumber(attr.hold);
+			if hold < session.bosh_hold then
+				log("debug", "Decreased hold from %i to %i at client request", session.bosh_hold, hold);
+				session.bosh_hold = hold;
+			end
+		end
 		sessions[sid] = session;
 		
 		session.log("debug", "BOSH session created for request from %s", session.ip);
 		log("info", "New BOSH session, assigned it sid '%s'", sid);
-		local r, send_buffer = session.requests, session.send_buffer;
+		local r, send_buffer = session.outbound_requests, session.send_buffer;
 		local response = { headers = default_headers }
 		function session.send(s)
 			-- We need to ensure that outgoing stanzas have the jabber:client xmlns
@@ -249,7 +390,7 @@ function stream_callbacks.streamopened(request, attr)
 				s.attr.xmlns = "jabber:client";
 			end
 			--log("debug", "Sending BOSH data: %s", tostring(s));
-			local oldest_request = r[1];
+			local oldest_request = table.remove(r, 1);
 			if oldest_request then
 				log("debug", "We have an open request, so sending on that");
 				response.body = t_concat({
@@ -260,19 +401,11 @@ function stream_callbacks.streamopened(request, attr)
 					"</body>"
 				});
 				oldest_request:send(response);
+				session.sent_responses.responses[oldest_request.rid] = response;
+				t_insert(session.sent_responses.rids, oldest_request.rid);
 				--log("debug", "Sent");
-				if oldest_request.stayopen then
-					if #r>1 then
-						-- Move front request to back
-						t_insert(r, oldest_request);
-						t_remove(r, 1);
-					end
-				else
-					log("debug", "Destroying the request now...");
-					oldest_request:destroy();
-				end
 			elseif s ~= "" then
-				log("debug", "Saved to send buffer because there are %d open requests", #r);
+				log("debug", "Saved to send buffer because there are no open requests");
 				-- Hmm, no requests are open :(
 				t_insert(session.send_buffer, tostring(s));
 				log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
@@ -299,6 +432,7 @@ function stream_callbacks.streamopened(request, attr)
 			["xmlns:stream"] = "http://etherx.jabber.org/streams"
 		}):add_child(features);
 		request:send{ headers = default_headers, body = tostring(response) };
+		request.created_session = true;
 		
 		request.sid = sid;
 		return;
@@ -313,22 +447,6 @@ function stream_callbacks.streamopened(request, attr)
 		return;
 	end
 	
-	if session.rid then
-		local rid = tonumber(attr.rid);
-		local diff = rid - session.rid;
-		if diff > 1 then
-			session.log("warn", "rid too large (means a request was lost). Last rid: %d New rid: %s", session.rid, attr.rid);
-		elseif diff <= 0 then
-			-- Repeated, ignore
-			session.log("debug", "rid repeated (on request %s), ignoring: %s (diff %d)", request.id, session.rid, diff);
-			request.notopen = nil;
-			request.ignore = true;
-			request.sid = sid;
-			t_insert(session.requests, request);
-			return;
-		end
-		session.rid = rid;
-	end
 	
 	if session.notopen then
 		local features = st.stanza("stream:features");
@@ -345,7 +463,6 @@ function stream_callbacks.streamopened(request, attr)
 	end
 
 	request.notopen = nil; -- Signals that we accept this opening tag
-	t_insert(session.requests, request);
 	request.sid = sid;
 end
 
@@ -357,7 +474,7 @@ function stream_callbacks.handlestanza(request, stanza)
 		if stanza.attr.xmlns == xmlns_bosh then
 			stanza.attr.xmlns = nil;
 		end
-		core_process_stanza(session, stanza);
+		t_insert(request.stanzas, stanza);
 	end
 end
 
