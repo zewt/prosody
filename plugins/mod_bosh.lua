@@ -435,9 +435,9 @@ create_session = function(request)
 
 	-- New session
 	sid = new_uuid();
-	if module:get_option("bosh_debug") and attr.setsid then
+	if module:get_option("bosh_debug") and attr["prosody:setsid"] then
 		-- For testing only, allow selecting the SID.
-		sid = attr.setsid;
+		sid = attr["prosody:setsid"];
 	end
 	local session = {
 		type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
