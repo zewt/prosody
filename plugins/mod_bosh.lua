@@ -418,10 +418,19 @@ create_session = function(request)
 			s.attr.xmlns = "jabber:client";
 		end
 		--log("debug", "Sending BOSH data: %s", tostring(s));
-		local oldest_request = table.remove(r, 1);
-		waiting_requests[oldest_request] = nil;
 
-		if oldest_request then
+		if #session.send_buffer > 0 or #r == 0 then
+			if s == "" then
+				return true;
+			end
+			log("debug", "Saved to send buffer because there are no open requests");
+			-- Hmm, no requests are open :(
+			t_insert(session.send_buffer, tostring(s));
+			log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
+		else
+			local oldest_request = table.remove(r, 1);
+			waiting_requests[oldest_request] = nil;
+
 			log("debug", "We have an open request, so sending on that");
 			response.body = t_concat({
 				"<body xmlns='http://jabber.org/protocol/httpbind' ",
@@ -434,11 +443,6 @@ create_session = function(request)
 			session.sent_responses.responses[oldest_request.rid] = response;
 			t_insert(session.sent_responses.rids, oldest_request.rid);
 			--log("debug", "Sent");
-		elseif s ~= "" then
-			log("debug", "Saved to send buffer because there are no open requests");
-			-- Hmm, no requests are open :(
-			t_insert(session.send_buffer, tostring(s));
-			log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
 		end
 		return true;
 	end
