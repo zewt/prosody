@@ -367,6 +367,10 @@ create_session = function(request)
 
 	-- New session
 	sid = new_uuid();
+	if module:get_option("bosh_debug") and attr.setsid then
+		-- For testing only, allow selecting the SID.
+		sid = attr.setsid;
+	end
 	local session = {
 		type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
 		bosh_version = attr.ver, bosh_wait = attr.wait, streamid = sid,
