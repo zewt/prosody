@@ -344,7 +344,10 @@ local function bosh_close_stream(session, reason)
 
 	local session_close_response = { headers = default_headers, body = tostring(close_reply) };
 
-	for _, held_request in ipairs(session.outbound_requests) do
+	-- Flush waiting outbound requests.  Note that send() will remove items from
+	-- outbound_requests while we're iterating on it, so we can't use ipairs here.
+	while #session.outbound_requests > 0 do
+		local held_request = session.outbound_requests[1];
 		held_request:send(session_close_response);
 		held_request:destroy();
 	end
