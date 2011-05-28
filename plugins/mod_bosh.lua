@@ -416,6 +416,8 @@ create_session = function(request)
 		end
 		--log("debug", "Sending BOSH data: %s", tostring(s));
 		local oldest_request = table.remove(r, 1);
+		waiting_requests[oldest_request] = nil;
+
 		if oldest_request then
 			log("debug", "We have an open request, so sending on that");
 			response.body = t_concat({
