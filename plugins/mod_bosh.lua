@@ -519,7 +519,6 @@ create_session = function(request)
 	local features = st.stanza("stream:features");
 	hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
 	fire_event("stream-features", session, features);
-	--xmpp:version='1.0' xmlns:xmpp='urn:xmpp:xbosh'
 	local response = st.stanza("body", { xmlns = xmlns_bosh,
 		wait = attr.wait,
 		inactivity = tostring(BOSH_DEFAULT_INACTIVITY),
@@ -533,6 +532,7 @@ create_session = function(request)
 		["xmlns:xmpp"] = "urn:xmpp:xbosh",
 		["xmlns:stream"] = "http://etherx.jabber.org/streams",
 		["xmpp:restartlogic"] = "true",
+		["xmpp:version"] = "1.0",
 	}):add_child(features);
 	request:send{ headers = default_headers, body = tostring(response) };
 	request_finished(request, session);
