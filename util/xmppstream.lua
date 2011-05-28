@@ -87,12 +87,10 @@ function new_sax_handlers(session, stream_callbacks)
 			local k = attr[i];
 			attr[i] = nil;
 			local ns, nm = match_ns(k);
-			if ns ~= "" then
-				ns = ns_prefixes[ns];
-				if ns then
-					attr[ns..":"..nm] = attr[k];
-					attr[k] = nil;
-				end
+			local prefix = ns_prefixes[ns];
+			if prefix then
+				attr[prefix..":"..nm] = attr[k];
+				attr[k] = nil;
 			end
 		end
 		
