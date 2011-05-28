@@ -90,6 +90,13 @@ function on_destroy_connection(request)
 	waiting_requests[request] = nil;
 	local session = sessions[request.sid];
 	if session then
+		request_finished(request, session);
+	end
+end
+
+local function request_finished(request, session)
+		waiting_requests[request] = nil;
+
 		local function remove_request(t)
 			for i,r in ipairs(t) do
 				if r == request then
@@ -103,13 +110,14 @@ function on_destroy_connection(request)
 
 		local outbound_requests = session.outbound_requests;
 		remove_request(session.outbound_requests);
-		
-		-- If this session now has no requests open, mark it as inactive
-		if #inbound_requests == 0 and #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
+
+		-- If this session has no outbound requests pending, so mark it inactive.  Buffered
+		-- inbound requests that can't be handled yet don't mark the session active, so
+		-- ignore them.
+		if #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
 			inactive_sessions[session] = os_time();
 			(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
 		end
-	end
 end
 
 local function terminateWithError(request, session, errorCondition)
@@ -435,7 +443,7 @@ create_session = function(request)
 			log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
 		else
 			local oldest_request = table.remove(r, 1);
-			waiting_requests[oldest_request] = nil;
+			request_finished(request, session);
 
 			log("debug", "We have an open request, so sending on that");
 			response.body = t_concat({
@@ -472,6 +480,7 @@ create_session = function(request)
 		["xmlns:stream"] = "http://etherx.jabber.org/streams"
 	}):add_child(features);
 	request:send{ headers = default_headers, body = tostring(response) };
+	request_finished(request, session);
 	return;
 end
 
