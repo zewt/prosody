@@ -294,7 +294,7 @@ process_request = function(request, session)
 	request.stanzas = {};
 	table.insert(session.outbound_requests, request);
 
-	local is_restart_request = request.attr.restart and (tostring(request.attr.restart) == "1" or tostring(request.attr.restart) == "true");
+	local is_restart_request = request.attr["xbosh:restart"] and (tostring(request.attr["xbosh:restart"]) == "1" or tostring(request.attr["xbosh:restart"]) == "true");
 	if session.notopen then
 		-- While we're waiting for a restart request, ignore any empty requests.  Sending a
 		-- non-empty request before the restart request is an error.  In a proxy BOSH

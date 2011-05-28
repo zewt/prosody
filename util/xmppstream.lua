@@ -27,6 +27,7 @@ local new_parser = lxp.new;
 
 local ns_prefixes = {
 	["http://www.w3.org/XML/1998/namespace"] = "xml";
+	["urn:xmpp:xbosh"] = "xbosh";
 };
 
 local xmlns_streams = "http://etherx.jabber.org/streams";
