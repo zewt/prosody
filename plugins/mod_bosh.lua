@@ -153,7 +153,7 @@ function handle_request(method, body, request)
 		return true;
 	end
 	
-	if request.created_session then
+	if not request.attr.sid then
 		-- If this was a session creation request, we've already sent a response.
 		return true;
 	end
@@ -256,7 +256,14 @@ process_request = function(request, session)
 		local r = session.outbound_requests;
 		log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 		log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
-		if #session.send_buffer > 0 then
+		if session.notopen then
+			log("debug", "Session isn't open; sending features");
+			local features = st.stanza("stream:features");
+			hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
+			fire_event("stream-features", session, features);
+			session.send(features);
+			session.notopen = nil;
+		elseif #session.send_buffer > 0 then
 			log("debug", "Session has data in the send buffer, will send now..");
 			local resp = t_concat(session.send_buffer);
 			session.send_buffer = {};
@@ -331,110 +338,116 @@ local function bosh_close_stream(session, reason)
 	sm_destroy_session(session);
 end
 
+local function create_session(request)
+	-- New session request
+	local attr = request.attr;
+	local sid = attr.sid
+	local rid = tonumber(attr.rid);
+
+	-- TODO: Sanity checks here (rid, to, known host, etc.)
+	if not hosts[attr.to] then
+		-- Unknown host
+		log("debug", "BOSH client tried to connect to unknown host: %s", tostring(attr.to));
+		local close_reply = st.stanza("body", { xmlns = xmlns_bosh, type = "terminate",
+			["xmlns:streams"] = xmlns_streams, condition = "host-unknown" });
+		request:send(tostring(close_reply));
+		return;
+	end
+
+	-- New session
+	sid = new_uuid();
+	local session = {
+		type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
+		bosh_version = attr.ver, bosh_wait = attr.wait, streamid = sid,
+		bosh_hold = BOSH_DEFAULT_HOLD, bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
+		inbound_requests = {},
+		outbound_requests = {},
+		sent_responses = {
+		    responses = {},
+		    rids = {},
+		},
+		send_buffer = {}, reset_stream = bosh_reset_stream,
+		close = bosh_close_stream, dispatch_stanza = core_process_stanza,
+		log = logger.init("bosh"..sid),	secure = consider_bosh_secure or request.secure,
+		ip = get_ip_from_request(request),
+		previous_rid_processed = tonumber(rid),
+	};
+	if attr.hold ~= nil then
+		local hold = tonumber(attr.hold);
+		if hold < session.bosh_hold then
+			log("debug", "Decreased hold from %i to %i at client request", session.bosh_hold, hold);
+			session.bosh_hold = hold;
+		end
+	end
+	sessions[sid] = session;
+
+	session.log("debug", "BOSH session created for request from %s", session.ip);
+	log("info", "New BOSH session, assigned it sid '%s'", sid);
+	local r, send_buffer = session.outbound_requests, session.send_buffer;
+	local response = { headers = default_headers }
+	function session.send(s)
+		-- We need to ensure that outgoing stanzas have the jabber:client xmlns
+		if s.attr and not s.attr.xmlns then
+			s = st.clone(s);
+			s.attr.xmlns = "jabber:client";
+		end
+		--log("debug", "Sending BOSH data: %s", tostring(s));
+		local oldest_request = table.remove(r, 1);
+		if oldest_request then
+			log("debug", "We have an open request, so sending on that");
+			response.body = t_concat({
+				"<body xmlns='http://jabber.org/protocol/httpbind' ",
+				session.bosh_terminate and "type='terminate' " or "",
+				"sid='", sid, "' xmlns:stream = 'http://etherx.jabber.org/streams'>",
+				tostring(s),
+				"</body>"
+			});
+			oldest_request:send(response);
+			session.sent_responses.responses[oldest_request.rid] = response;
+			t_insert(session.sent_responses.rids, oldest_request.rid);
+			--log("debug", "Sent");
+		elseif s ~= "" then
+			log("debug", "Saved to send buffer because there are no open requests");
+			-- Hmm, no requests are open :(
+			t_insert(session.send_buffer, tostring(s));
+			log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
+		end
+		return true;
+	end
+
+	-- Send creation response
+
+	local features = st.stanza("stream:features");
+	hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
+	fire_event("stream-features", session, features);
+	--xmpp:version='1.0' xmlns:xmpp='urn:xmpp:xbosh'
+	local response = st.stanza("body", { xmlns = xmlns_bosh,
+		wait = attr.wait,
+		inactivity = tostring(BOSH_DEFAULT_INACTIVITY),
+		polling = tostring(BOSH_DEFAULT_POLLING),
+		requests = tostring(BOSH_DEFAULT_REQUESTS),
+		hold = tostring(session.bosh_hold),
+		sid = sid, authid = sid,
+		ver  = '1.6', from = session.host,
+		secure = 'true', ["xmpp:version"] = "1.0",
+		["xmlns:xmpp"] = "urn:xmpp:xbosh",
+		["xmlns:stream"] = "http://etherx.jabber.org/streams"
+	}):add_child(features);
+	request:send{ headers = default_headers, body = tostring(response) };
+end
+
 function stream_callbacks.streamopened(request, attr)
 	log("debug", "BOSH body open (sid: %s)", attr.sid);
 	local sid = attr.sid
-	local rid = tonumber(attr.rid);
-	request.rid = rid;
+	request.rid = tonumber(attr.rid);
+	request.sid = sid;
 	request.stanzas = {};
+	request.attr = attr;
+
+	request.notopen = nil; -- Signals that we accept this opening tag
 
 	if not sid then
-		-- New session request
-		request.notopen = nil; -- Signals that we accept this opening tag
-		
-		-- TODO: Sanity checks here (rid, to, known host, etc.)
-		if not hosts[attr.to] then
-			-- Unknown host
-			log("debug", "BOSH client tried to connect to unknown host: %s", tostring(attr.to));
-			local close_reply = st.stanza("body", { xmlns = xmlns_bosh, type = "terminate",
-				["xmlns:streams"] = xmlns_streams, condition = "host-unknown" });
-			request:send(tostring(close_reply));
-			return;
-		end
-		
-		-- New session
-		sid = new_uuid();
-		local session = {
-			type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
-			bosh_version = attr.ver, bosh_wait = attr.wait, streamid = sid,
-			bosh_hold = BOSH_DEFAULT_HOLD, bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
-			inbound_requests = {},
-			outbound_requests = {},
-			sent_responses = {
-			    responses = {},
-		            rids = {},
-		        },
-			send_buffer = {}, reset_stream = bosh_reset_stream,
-			close = bosh_close_stream, dispatch_stanza = core_process_stanza,
-			log = logger.init("bosh"..sid),	secure = consider_bosh_secure or request.secure,
-			ip = get_ip_from_request(request),
-			previous_rid_processed = tonumber(rid),
-		};
-		if attr.hold ~= nil then
-			local hold = tonumber(attr.hold);
-			if hold < session.bosh_hold then
-				log("debug", "Decreased hold from %i to %i at client request", session.bosh_hold, hold);
-				session.bosh_hold = hold;
-			end
-		end
-		sessions[sid] = session;
-		
-		session.log("debug", "BOSH session created for request from %s", session.ip);
-		log("info", "New BOSH session, assigned it sid '%s'", sid);
-		local r, send_buffer = session.outbound_requests, session.send_buffer;
-		local response = { headers = default_headers }
-		function session.send(s)
-			-- We need to ensure that outgoing stanzas have the jabber:client xmlns
-			if s.attr and not s.attr.xmlns then
-				s = st.clone(s);
-				s.attr.xmlns = "jabber:client";
-			end
-			--log("debug", "Sending BOSH data: %s", tostring(s));
-			local oldest_request = table.remove(r, 1);
-			if oldest_request then
-				log("debug", "We have an open request, so sending on that");
-				response.body = t_concat({
-					"<body xmlns='http://jabber.org/protocol/httpbind' ",
-					session.bosh_terminate and "type='terminate' " or "",
-					"sid='", sid, "' xmlns:stream = 'http://etherx.jabber.org/streams'>",
-					tostring(s),
-					"</body>"
-				});
-				oldest_request:send(response);
-				session.sent_responses.responses[oldest_request.rid] = response;
-				t_insert(session.sent_responses.rids, oldest_request.rid);
-				--log("debug", "Sent");
-			elseif s ~= "" then
-				log("debug", "Saved to send buffer because there are no open requests");
-				-- Hmm, no requests are open :(
-				t_insert(session.send_buffer, tostring(s));
-				log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
-			end
-			return true;
-		end
-		
-		-- Send creation response
-		
-		local features = st.stanza("stream:features");
-		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
-		fire_event("stream-features", session, features);
-		--xmpp:version='1.0' xmlns:xmpp='urn:xmpp:xbosh'
-		local response = st.stanza("body", { xmlns = xmlns_bosh,
-			wait = attr.wait,
-			inactivity = tostring(BOSH_DEFAULT_INACTIVITY),
-			polling = tostring(BOSH_DEFAULT_POLLING),
-			requests = tostring(BOSH_DEFAULT_REQUESTS),
-			hold = tostring(session.bosh_hold),
-			sid = sid, authid = sid,
-			ver  = '1.6', from = session.host,
-			secure = 'true', ["xmpp:version"] = "1.0",
-			["xmlns:xmpp"] = "urn:xmpp:xbosh",
-			["xmlns:stream"] = "http://etherx.jabber.org/streams"
-		}):add_child(features);
-		request:send{ headers = default_headers, body = tostring(response) };
-		request.created_session = true;
-		
-		request.sid = sid;
+		create_session(request);
 		return;
 	end
 	
@@ -443,17 +456,7 @@ function stream_callbacks.streamopened(request, attr)
 		-- Unknown sid
 		log("info", "Client tried to use sid '%s' which we don't know about", sid);
 		request:send{ headers = default_headers, body = tostring(st.stanza("body", { xmlns = xmlns_bosh, type = "terminate", condition = "item-not-found" })) };
-		request.notopen = nil;
 		return;
-	end
-	
-	
-	if session.notopen then
-		local features = st.stanza("stream:features");
-		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
-		fire_event("stream-features", session, features);
-		session.send(features);
-		session.notopen = nil;
 	end
 	
 	if attr.type == "terminate" then
@@ -461,13 +464,9 @@ function stream_callbacks.streamopened(request, attr)
 		-- after processing any stanzas in this request
 		session.bosh_terminate = true;
 	end
-
-	request.notopen = nil; -- Signals that we accept this opening tag
-	request.sid = sid;
 end
 
 function stream_callbacks.handlestanza(request, stanza)
-	if request.ignore then return; end
 	log("debug", "BOSH stanza received: %s\n", stanza:top_tag());
 	local session = sessions[request.sid];
 	if session then
