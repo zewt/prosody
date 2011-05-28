@@ -385,7 +385,9 @@ create_session = function(request)
 	local session = {
 		type = "c2s_unauthed", conn = {}, sid = sid, host = attr.to,
 		bosh_version = attr.ver, bosh_wait = attr.wait, streamid = sid,
-		bosh_hold = BOSH_DEFAULT_HOLD, bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
+		bosh_hold = BOSH_DEFAULT_HOLD,
+		bosh_requests = BOSH_DEFAULT_REQUESTS,
+		bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
 		inbound_requests = {},
 		outbound_requests = {},
 		sent_responses = {
@@ -405,6 +407,10 @@ create_session = function(request)
 			session.bosh_hold = hold;
 		end
 	end
+
+	-- Ensure that requests is always greater than hold.
+	session.bosh_requests = math.max(session.bosh_hold+1, session.bosh_requests);
+
 	sessions[sid] = session;
 
 	session.log("debug", "BOSH session created for request from %s", session.ip);
@@ -457,7 +463,7 @@ create_session = function(request)
 		wait = attr.wait,
 		inactivity = tostring(BOSH_DEFAULT_INACTIVITY),
 		polling = tostring(BOSH_DEFAULT_POLLING),
-		requests = tostring(BOSH_DEFAULT_REQUESTS),
+		requests = tostring(session.bosh_requests),
 		hold = tostring(session.bosh_hold),
 		sid = sid, authid = sid,
 		ver  = '1.6', from = session.host,
