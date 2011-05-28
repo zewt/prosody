@@ -294,12 +294,36 @@ process_request = function(request, session)
 	request.stanzas = {};
 	table.insert(session.outbound_requests, request);
 
+	local is_restart_request = request.attr.restart and (tostring(request.attr.restart) == "1" or tostring(request.attr.restart) == "true");
 	if session.notopen then
+		-- While we're waiting for a restart request, ignore any empty requests.  Sending a
+		-- non-empty request before the restart request is an error.  In a proxy BOSH
+		-- implementation, doing that would break the stream.
+		if not is_restart_request then
+			if #stanzas > 0 then
+				log("warn", "Received stanzas in a non-restart request while we were expecting a restart");
+				terminateWithError(request, session, "bad-request");
+				return;
+			end
+
+			-- Null requests are normal here; ignore them.
+			session.send("");
+			return;
+		end
+
+		-- Ignore any stanzas in the request, per XEP-0206 sec5.
+		stanzas = {};
+
 		session.notopen = nil;
 		local features = st.stanza("stream:features");
 		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
 		fire_event("stream-features", session, features);
 		session.send(features);
+	elseif is_restart_request then
+		-- A restart request when we're not expecting one is an error.
+		log("warn", "Restart request received, but we weren't expecting one");
+		terminateWithError(request, session, "bad-request");
+		return;
 	end
 
 	for idx, stanza in ipairs(stanzas) do
@@ -339,7 +363,10 @@ process_request = function(request, session)
 end
 
 
-local function bosh_reset_stream(session) session.notopen = true; end
+local function bosh_reset_stream(session)
+	log("debug", "Stream reset");
+	session.notopen = true;
+end
 
 local stream_xmlns_attr = { xmlns = "urn:ietf:params:xml:ns:xmpp-streams" };
 
@@ -504,7 +531,8 @@ create_session = function(request)
 		ver  = '1.6', from = session.host,
 		secure = 'true', ["xmpp:version"] = "1.0",
 		["xmlns:xmpp"] = "urn:xmpp:xbosh",
-		["xmlns:stream"] = "http://etherx.jabber.org/streams"
+		["xmlns:stream"] = "http://etherx.jabber.org/streams",
+		["xmpp:restartlogic"] = "true",
 	}):add_child(features);
 	request:send{ headers = default_headers, body = tostring(response) };
 	request_finished(request, session);
