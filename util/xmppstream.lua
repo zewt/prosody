@@ -38,6 +38,15 @@ local ns_pattern = "^([^"..ns_separator.."]*)"..ns_separator.."?(.*)$";
 _M.ns_separator = ns_separator;
 _M.ns_pattern = ns_pattern;
 
+function match_ns(s)
+	ns, name = s:match(ns_pattern)
+	if name == "" then
+		return "", ns;
+	else
+		return ns, name
+	end
+end
+
 function new_sax_handlers(session, stream_callbacks)
 	local xml_handlers = {};
 	
@@ -66,10 +75,7 @@ function new_sax_handlers(session, stream_callbacks)
 			t_insert(stanza, t_concat(chardata));
 			chardata = {};
 		end
-		local curr_ns,name = tagname:match(ns_pattern);
-		if name == "" then
-			curr_ns, name = "", curr_ns;
-		end
+		local curr_ns,name = match_ns(tagname);
 
 		if curr_ns ~= stream_default_ns or non_streamns_depth > 0 then
 			attr.xmlns = curr_ns;
@@ -80,8 +86,8 @@ function new_sax_handlers(session, stream_callbacks)
 		for i=1,#attr do
 			local k = attr[i];
 			attr[i] = nil;
-			local ns, nm = k:match(ns_pattern);
-			if nm ~= "" then
+			local ns, nm = match_ns(k);
+			if ns ~= "" then
 				ns = ns_prefixes[ns];
 				if ns then
 					attr[ns..":"..nm] = attr[k];
