@@ -33,6 +33,7 @@ local BOSH_DEFAULT_HOLD = tonumber(module:get_option("bosh_default_hold")) or 3;
 local BOSH_DEFAULT_INACTIVITY = tonumber(module:get_option("bosh_max_inactivity")) or 60;
 local BOSH_DEFAULT_POLLING = tonumber(module:get_option("bosh_max_polling")) or 5;
 local BOSH_DEFAULT_REQUESTS = tonumber(module:get_option("bosh_max_requests")) or 5;
+local BOSH_DEFAULT_MAXPAUSE = tonumber(module:get_option("bosh_maxpause")) or 60*60*12;
 
 -- The maximum number of responses to store for rerequesting.  Clients shouldn't need
 -- to request more requests than they can open simultaneously, so keep up to REQUESTS.
@@ -86,14 +87,6 @@ local inactive_sessions = {}; -- Sessions which have no open requests
 
 -- Used to respond to idle sessions (those with waiting requests)
 local waiting_requests = {};
-function on_destroy_connection(request)
-	waiting_requests[request] = nil;
-	local session = sessions[request.sid];
-	if session then
-		request_finished(request, session);
-	end
-end
-
 local function request_finished(request, session)
 	waiting_requests[request] = nil;
 
@@ -117,6 +110,14 @@ local function request_finished(request, session)
 	if #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
 		inactive_sessions[session] = os_time();
 		(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
+	end
+end
+
+function on_destroy_connection(request)
+	waiting_requests[request] = nil;
+	local session = sessions[request.sid];
+	if session then
+		request_finished(request, session);
 	end
 end
 
@@ -204,6 +205,15 @@ function handle_request(method, body, request)
 		return #session.inbound_requests + 1;
 	end
 
+	-- Sending a request ends pause.
+	session.bosh_paused = nil;
+
+	-- Pause requests greater than the value of maxpause are disallowed.
+	local bosh_pause_request = tonumber(request.attr.pause);
+	if bosh_pause_request ~= nil and bosh_pause_request <= BOSH_DEFAULT_MAXPAUSE then
+		session.bosh_paused = bosh_pause_request;
+	end
+
 	-- Add the request to the request queue.
 	local idx = find_insert_pos(request.rid);
 	t_insert(session.inbound_requests, idx, request);
@@ -238,6 +248,22 @@ function handle_request(method, body, request)
 			process_request(in_req, session);
 		end
 		log("debug", "continue");
+	end
+
+	if session.bosh_paused or session.bosh_terminate then
+		-- Flush held requests.
+		log("debug", "flushing");
+		while #session.outbound_requests > 0 do
+			log("debug", "Closing outbound request before pause");
+			session.send("");
+		end
+	end
+
+	-- Check if this request terminated the session.
+	if session.bosh_terminate then
+		log("debug", "Closing session with %d requests open", #session.outbound_requests);
+		session:close();
+		return;
 	end
 
 	if session.destroyed then
@@ -290,13 +316,16 @@ process_request = function(request, session)
 		fire_event("stream-features", session, features);
 		session.send(features);
 		session.notopen = nil;
-	elseif #session.send_buffer > 0 then
+	elseif #session.send_buffer > 0 and not request.attr.pause then
+		-- If we have data waiting to be sent, send it.  If this is a pause request, don't;
+		-- responses to pause requests must not contain any stanzas.
 		log("debug", "Session has data in the send buffer, will send now..");
 		local resp = t_concat(session.send_buffer);
 		session.send_buffer = {};
 		session.send(resp);
-	elseif #r > session.bosh_hold then
-		-- We are holding too many requests; release the oldest.
+	elseif #r > session.bosh_hold or session.bosh_paused then
+		-- We are holding too many requests; release the oldest.  If this is a
+		-- pause request, release all requests.
 		log("debug", "We are holding too many requests, sending an empty response");
 		session.send("");
 	else
@@ -306,13 +335,6 @@ process_request = function(request, session)
 			request.reply_before = os_time() + session.bosh_wait;
 			waiting_requests[request] = true;
 		end
-	end
-
-	-- Check if this request terminated the session.
-	if session.bosh_terminate then
-		log("debug", "Closing session with %d requests open", #session.outbound_requests);
-		session:close();
-		return;
 	end
 end
 
@@ -433,7 +455,11 @@ create_session = function(request)
 		end
 		--log("debug", "Sending BOSH data: %s", tostring(s));
 
-		if #session.send_buffer > 0 or #r == 0 then
+		-- If this response has data, and we already have responses buffered, always
+		-- buffer this response as well.  However, if this response is empty then we
+		-- can send it immediately, even if data is buffered.  This happens when sending
+		-- a response to a pause request.
+		if (s ~= "" and #session.send_buffer > 0) or #r == 0 then
 			if s == "" then
 				return true;
 			end
@@ -443,7 +469,7 @@ create_session = function(request)
 			log("debug", "There are now %d things in the send_buffer", #session.send_buffer);
 		else
 			local oldest_request = table.remove(r, 1);
-			request_finished(request, session);
+			request_finished(oldest_request, session);
 
 			log("debug", "We have an open request, so sending on that");
 			response.body = t_concat({
@@ -473,6 +499,7 @@ create_session = function(request)
 		polling = tostring(BOSH_DEFAULT_POLLING),
 		requests = tostring(session.bosh_requests),
 		hold = tostring(session.bosh_hold),
+		maxpause = tostring(BOSH_DEFAULT_MAXPAUSE),
 		sid = sid, authid = sid,
 		ver  = '1.6', from = session.host,
 		secure = 'true', ["xmpp:version"] = "1.0",
@@ -543,8 +570,15 @@ function on_timer()
 	now = now - 3;
 	local n_dead_sessions = 0;
 	for session, inactive_since in pairs(inactive_sessions) do
-		if session.bosh_max_inactive then
-			if now - inactive_since > session.bosh_max_inactive then
+		local max_inactive = session.bosh_max_inactive;
+
+		-- If this session is paused, use the requested timeout.
+		if session.bosh_paused then
+			max_inactive = session.bosh_paused;
+		end
+
+		if max_inactive then
+			if now - inactive_since > max_inactive then
 				(session.log or log)("debug", "BOSH client inactive too long, destroying session at %d", now);
 				sessions[session.sid]  = nil;
 				inactive_sessions[session] = nil;
