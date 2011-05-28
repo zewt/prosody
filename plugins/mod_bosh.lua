@@ -95,29 +95,29 @@ function on_destroy_connection(request)
 end
 
 local function request_finished(request, session)
-		waiting_requests[request] = nil;
+	waiting_requests[request] = nil;
 
-		local function remove_request(t)
-			for i,r in ipairs(t) do
-				if r == request then
-					t_remove(t, i);
-					return;
-				end
+	local function remove_request(t)
+		for i,r in ipairs(t) do
+			if r == request then
+				t_remove(t, i);
+				return;
 			end
 		end
-		local inbound_requests = session.inbound_requests;
-		remove_request(session.inbound_requests);
+	end
+	local inbound_requests = session.inbound_requests;
+	remove_request(session.inbound_requests);
 
-		local outbound_requests = session.outbound_requests;
-		remove_request(session.outbound_requests);
+	local outbound_requests = session.outbound_requests;
+	remove_request(session.outbound_requests);
 
-		-- If this session has no outbound requests pending, so mark it inactive.  Buffered
-		-- inbound requests that can't be handled yet don't mark the session active, so
-		-- ignore them.
-		if #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
-			inactive_sessions[session] = os_time();
-			(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
-		end
+	-- If this session has no outbound requests pending, so mark it inactive.  Buffered
+	-- inbound requests that can't be handled yet don't mark the session active, so
+	-- ignore them.
+	if #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
+		inactive_sessions[session] = os_time();
+		(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
+	end
 end
 
 local function terminateWithError(request, session, errorCondition)
@@ -274,46 +274,46 @@ process_request = function(request, session)
 	session.previous_rid_processed = request.rid
 	table.insert(session.outbound_requests, request);
 
-               -- Session was marked as inactive, since we have
-               -- a request open now, unmark it
-               if inactive_sessions[session] then
-                       inactive_sessions[session] = nil;
-               end
+	-- Session was marked as inactive, since we have
+	-- a request open now, unmark it
+	if inactive_sessions[session] then
+		inactive_sessions[session] = nil;
+	end
 
-		local r = session.outbound_requests;
-		log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
-		log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
-		if session.notopen then
-			log("debug", "Session isn't open; sending features");
-			local features = st.stanza("stream:features");
-			hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
-			fire_event("stream-features", session, features);
-			session.send(features);
-			session.notopen = nil;
-		elseif #session.send_buffer > 0 then
-			log("debug", "Session has data in the send buffer, will send now..");
-			local resp = t_concat(session.send_buffer);
-			session.send_buffer = {};
-			session.send(resp);
-		elseif #r > session.bosh_hold then
-			-- We are holding too many requests; release the oldest.
-			log("debug", "We are holding too many requests, sending an empty response");
-			session.send("");
-		else
-			-- We're keeping this request open, to respond later
-			log("debug", "Have nothing to say, so leaving request unanswered for now");
-			if session.bosh_wait then
-				request.reply_before = os_time() + session.bosh_wait;
-				waiting_requests[request] = true;
-			end
+	local r = session.outbound_requests;
+	log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
+	log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
+	if session.notopen then
+		log("debug", "Session isn't open; sending features");
+		local features = st.stanza("stream:features");
+		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
+		fire_event("stream-features", session, features);
+		session.send(features);
+		session.notopen = nil;
+	elseif #session.send_buffer > 0 then
+		log("debug", "Session has data in the send buffer, will send now..");
+		local resp = t_concat(session.send_buffer);
+		session.send_buffer = {};
+		session.send(resp);
+	elseif #r > session.bosh_hold then
+		-- We are holding too many requests; release the oldest.
+		log("debug", "We are holding too many requests, sending an empty response");
+		session.send("");
+	else
+		-- We're keeping this request open, to respond later
+		log("debug", "Have nothing to say, so leaving request unanswered for now");
+		if session.bosh_wait then
+			request.reply_before = os_time() + session.bosh_wait;
+			waiting_requests[request] = true;
 		end
-		
-		-- Check if this request terminated the session.
-		if session.bosh_terminate then
-			log("debug", "Closing session with %d requests open", #session.outbound_requests);
-			session:close();
-			return;
-		end
+	end
+
+	-- Check if this request terminated the session.
+	if session.bosh_terminate then
+		log("debug", "Closing session with %d requests open", #session.outbound_requests);
+		session:close();
+		return;
+	end
 end
 
 
