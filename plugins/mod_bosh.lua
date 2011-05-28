@@ -118,7 +118,9 @@ local function terminateWithError(request, session, errorCondition)
 	};
 
 	request:send(item_not_found_response);
-	session:close();
+	if session ~= nil then
+		session:close();
+	end
 end
 
 local process_request;
@@ -148,6 +150,12 @@ function handle_request(method, body, request)
 	-- stream:feed() calls the stream_callbacks, so all stanzas in
 	-- the body are processed in this next line before it returns.
 	stream:feed(body);
+
+	if not request.closed then
+		log("warn", "Invalid request");
+		terminateWithError(request, nil, "bad-request");
+		return true;
+	end
 
 	if not request.attr.sid then
 		create_session(request);
@@ -459,6 +467,11 @@ function stream_callbacks.streamopened(request, attr)
 	request.attr = attr;
 
 	request.notopen = nil; -- Signals that we accept this opening tag
+end
+
+function stream_callbacks.streamclosed(request, attr)
+	log("debug", "BOSH request closed");
+	request.closed = true;
 end
 
 function stream_callbacks.handlestanza(request, stanza)
