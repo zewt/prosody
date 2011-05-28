@@ -245,6 +245,7 @@ function handle_request(method, body, request)
 
 			in_req:send(original_response);
 		else
+			session.previous_rid_processed = in_req.rid;
 			process_request(in_req, session);
 		end
 		log("debug", "continue");
@@ -291,14 +292,11 @@ process_request = function(request, session)
 	log("debug", "handle rid %i (next rid is %i)", tostring(request.rid), tostring(session.previous_rid_processed));
 	local stanzas = request.stanzas;
 	request.stanzas = {};
-	session.previous_rid_processed = request.rid;
+	table.insert(session.outbound_requests, request);
 	for idx, stanza in ipairs(stanzas) do
 		log("debug", "processing " .. tostring(idx) .. "...");
 		core_process_stanza(session, stanza);
 	end
-
-	session.previous_rid_processed = request.rid
-	table.insert(session.outbound_requests, request);
 
 	-- Session was marked as inactive, since we have
 	-- a request open now, unmark it
