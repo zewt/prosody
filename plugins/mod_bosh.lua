@@ -294,6 +294,17 @@ process_request = function(request, session)
 	request.stanzas = {};
 	table.insert(session.outbound_requests, request);
 
+	if session.bosh_wait then
+		request.reply_before = os_time() + session.bosh_wait;
+		waiting_requests[request] = true;
+	end
+
+	-- Session was marked as inactive, since we have
+	-- a request open now, unmark it
+	if inactive_sessions[session] then
+		inactive_sessions[session] = nil;
+	end
+
 	local is_restart_request = request.attr["xbosh:restart"] and (tostring(request.attr["xbosh:restart"]) == "1" or tostring(request.attr["xbosh:restart"]) == "true");
 	if session.notopen then
 		-- While we're waiting for a restart request, ignore any empty requests.  Sending a
@@ -331,12 +342,6 @@ process_request = function(request, session)
 		core_process_stanza(session, stanza);
 	end
 
-	-- Session was marked as inactive, since we have
-	-- a request open now, unmark it
-	if inactive_sessions[session] then
-		inactive_sessions[session] = nil;
-	end
-
 	local r = session.outbound_requests;
 	log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 	log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
@@ -355,10 +360,6 @@ process_request = function(request, session)
 	else
 		-- We're keeping this request open, to respond later
 		log("debug", "Have nothing to say, so leaving request unanswered for now");
-		if session.bosh_wait then
-			request.reply_before = os_time() + session.bosh_wait;
-			waiting_requests[request] = true;
-		end
 	end
 end
 
