@@ -609,8 +609,6 @@ function on_timer()
 		if max_inactive then
 			if now - inactive_since > max_inactive then
 				(session.log or log)("debug", "BOSH client inactive too long, destroying session at %d", now);
-				sessions[session.sid]  = nil;
-				inactive_sessions[session] = nil;
 				n_dead_sessions = n_dead_sessions + 1;
 				dead_sessions[n_dead_sessions] = session;
 			end
@@ -622,7 +620,7 @@ function on_timer()
 	for i=1,n_dead_sessions do
 		local session = dead_sessions[i];
 		dead_sessions[i] = nil;
-		sm_destroy_session(session, "BOSH client silent for over "..session.bosh_max_inactive.." seconds");
+		session:close({condition = "connection-timeout", text = "BOSH client silent for over "..session.bosh_max_inactive.." seconds"});
 	end
 	return 1;
 end
