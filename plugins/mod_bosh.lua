@@ -320,19 +320,19 @@ process_request = function(request, session)
 	end
 
 	local is_restart_request = request.attr["xbosh:restart"] and (tostring(request.attr["xbosh:restart"]) == "1" or tostring(request.attr["xbosh:restart"]) == "true");
-	if session.notopen then
-		-- While we're waiting for a restart request, ignore any empty requests.  Sending a
-		-- non-empty request before the restart request is an error.  In a proxy BOSH
-		-- implementation, doing that would break the stream.
-		if not is_restart_request then
-			if #stanzas > 0 then
-				log("warn", "Received stanzas in a non-restart request while we were expecting a restart");
-				terminateWithError(request, session, "bad-request");
-				return;
-			end
+	if session.notopen and not is_restart_request and #stanzas > 0 then
+		-- Receiving stanzas when we're expecting a restart is an error.  Empty requests are
+		-- allowed, however.
+		log("warn", "Received stanzas in a non-restart request while we were expecting a restart");
+		terminateWithError(request, session, "bad-request");
+		return;
+	end
 
-			-- Null requests are normal here; ignore them.
-			session.send("");
+	if is_restart_request then
+		if not session.notopen then
+			-- A restart request when we're not expecting one is an error.
+			log("warn", "Restart request received, but we weren't expecting one");
+			terminateWithError(request, session, "bad-request");
 			return;
 		end
 
@@ -344,11 +344,6 @@ process_request = function(request, session)
 		hosts[session.host].events.fire_event("stream-features", { origin = session, features = features });
 		fire_event("stream-features", session, features);
 		session.send(features);
-	elseif is_restart_request then
-		-- A restart request when we're not expecting one is an error.
-		log("warn", "Restart request received, but we weren't expecting one");
-		terminateWithError(request, session, "bad-request");
-		return;
 	end
 
 	for idx, stanza in ipairs(stanzas) do
