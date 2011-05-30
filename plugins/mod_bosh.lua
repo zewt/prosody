@@ -356,6 +356,8 @@ process_request = function(request, session)
 		core_process_stanza(session, stanza);
 	end
 
+	if session.destroyed then return; end
+
 	local r = session.outbound_requests;
 	log("debug", "Session %s has %d out of %d requests open", request.sid, #r, session.bosh_hold);
 	log("debug", "and there are %d things in the send_buffer", #session.send_buffer);
