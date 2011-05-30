@@ -199,7 +199,7 @@ function log_sink_types.nowhere()
 end
 
 -- Column width for "source" (used by stdout and console)
-local sourcewidth = 20;
+local sourcewidth = 45;
 
 function log_sink_types.stdout(config)
 	local timestamps = config.timestamps;
