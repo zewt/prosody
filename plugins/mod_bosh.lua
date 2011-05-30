@@ -45,7 +45,7 @@ local request_buffer_size = BOSH_DEFAULT_REQUESTS;
 
 local consider_bosh_secure = module:get_option_boolean("consider_bosh_secure");
 
-local default_headers = { ["Content-Type"] = "text/xml; charset=utf-8" };
+local default_headers = { };
 
 local cross_domain = module:get_option("cross_domain_bosh");
 if cross_domain then
@@ -61,6 +61,15 @@ if cross_domain then
 	if type(cross_domain) == "string" then
 		default_headers["Access-Control-Allow-Origin"] = cross_domain;
 	end
+end
+
+local function get_headers(session)
+	local headers = {};
+	for k, v in pairs(default_headers) do headers[k] = v; end
+	if session then
+		headers["Content-Type"] = session.bosh_content_type;
+	end
+	return headers;
 end
 
 local trusted_proxies = module:get_option_set("trusted_proxies", {"127.0.0.1"})._items;
@@ -122,7 +131,7 @@ function on_destroy_connection(request)
 end
 
 local function terminateWithError(request, session, errorCondition)
-	local item_not_found_response = { headers = default_headers,
+	local item_not_found_response = { headers = get_headers(session),
 		body = "<body type='terminate' condition='" .. errorCondition .. "' xmlns='http://jabber.org/protocol/httpbind'/>"
 	};
 
@@ -137,8 +146,7 @@ local create_session;
 function handle_request(method, body, request)
 	if (not body) or request.method ~= "POST" then
 		if request.method == "OPTIONS" then
-			local headers = {};
-			for k,v in pairs(default_headers) do headers[k] = v; end
+			local headers = default_headers;
 			headers["Content-Type"] = nil;
 			return { headers = headers, body = "" };
 		else
@@ -406,12 +414,13 @@ local function bosh_close_stream(session, reason)
 		log("info", "Disconnecting client, <stream:error> is: %s", tostring(close_reply));
 	end
 
-	local session_close_response = { headers = default_headers, body = tostring(close_reply) };
+	local session_close_response = { headers = get_headers(session), body = tostring(close_reply) };
 
 	-- Flush waiting outbound requests.  Note that send() will remove items from
 	-- outbound_requests while we're iterating on it, so we can't use ipairs here.
 	while #session.outbound_requests > 0 do
 		local held_request = session.outbound_requests[1];
+
 		held_request:send(session_close_response);
 		held_request:destroy();
 	end
@@ -452,6 +461,7 @@ create_session = function(request)
 		bosh_hold = BOSH_DEFAULT_HOLD,
 		bosh_requests = BOSH_DEFAULT_REQUESTS,
 		bosh_max_inactive = BOSH_DEFAULT_INACTIVITY,
+		bosh_content_type = attr.content or "text/xml; charset=utf-8",
 		inbound_requests = {},
 		outbound_requests = {},
 		sent_responses = {
@@ -480,7 +490,7 @@ create_session = function(request)
 	session.log("debug", "BOSH session created for request from %s", session.ip);
 	log("info", "New BOSH session, assigned it sid '%s'", sid);
 	local r, send_buffer = session.outbound_requests, session.send_buffer;
-	local response = { headers = default_headers }
+	local response = { headers = get_headers(session) }
 	function session.send(s)
 		-- We need to ensure that outgoing stanzas have the jabber:client xmlns
 		if s.attr and not s.attr.xmlns then
@@ -541,7 +551,7 @@ create_session = function(request)
 		["xmpp:restartlogic"] = "true",
 		["xmpp:version"] = "1.0",
 	}):add_child(features);
-	request:send{ headers = default_headers, body = tostring(response) };
+	request:send{ headers = get_headers(session), body = tostring(response) };
 	request_finished(request, session);
 	return;
 end
