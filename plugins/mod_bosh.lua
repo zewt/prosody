@@ -166,6 +166,12 @@ function handle_request(method, body, request)
 		return true;
 	end
 
+	if request.rid == nil then
+		log("warn", "Request has no RID attribute")
+		terminateWithError(request, nil, "bad-request");
+		return;
+	end
+
 	if not request.attr.sid then
 		create_session(request);
 		return true;
