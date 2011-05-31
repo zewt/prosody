@@ -592,11 +592,9 @@ end
 
 local dead_sessions = {};
 function on_timer()
-	-- log("debug", "Checking for requests soon to timeout...");
-	-- Identify requests timing out within the next few seconds
-	local now = os_time() + 3;
 	-- Check active sessions (sessions with at least one outbound request) whose
-	-- 'wait' period is expiring.
+	-- 'wait' period has expired.
+	local now = os_time();
 	for session, active_since in pairs(active_sessions) do
 		local reply_before = active_since + session.bosh_wait;
 		if reply_before <= now then
@@ -610,7 +608,6 @@ function on_timer()
 		end
 	end
 	
-	now = now - 3;
 	local n_dead_sessions = 0;
 	for session, inactive_since in pairs(inactive_sessions) do
 		local max_inactive = session.bosh_max_inactive;
