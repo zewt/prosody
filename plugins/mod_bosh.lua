@@ -92,13 +92,11 @@ local t_insert, t_remove, t_concat = table.insert, table.remove, table.concat;
 local os_time = os.time;
 
 local sessions = {};
-local inactive_sessions = {}; -- Sessions which have no open requests
+local inactive_sessions = {}; -- Sessions which have no open outbound requests
+local active_sessions = {}; -- Sessions which have at least one open outbound request
 
 -- Used to respond to idle sessions (those with waiting requests)
-local waiting_requests = {};
 local function request_finished(request, session)
-	waiting_requests[request] = nil;
-
 	local function remove_request(t)
 		for i,r in ipairs(t) do
 			if r == request then
@@ -113,17 +111,20 @@ local function request_finished(request, session)
 	local outbound_requests = session.outbound_requests;
 	remove_request(session.outbound_requests);
 
-	-- If this session has no outbound requests pending, so mark it inactive.  Buffered
+	-- If this session has no outbound requests pending, mark it inactive.  Buffered
 	-- inbound requests that can't be handled yet don't mark the session active, so
 	-- ignore them.
 	if #outbound_requests == 0 and session.bosh_max_inactive and not inactive_sessions[session] then
 		inactive_sessions[session] = os_time();
+		active_sessions[session] = nil;
 		(session.log or log)("debug", "BOSH session marked as inactive at %d", inactive_sessions[session]);
+	else
+		inactive_sessions[session] = nil;
+		active_sessions[session] = os_time();
 	end
 end
 
 function on_destroy_connection(request)
-	waiting_requests[request] = nil;
 	local session = sessions[request.sid];
 	if session then
 		request_finished(request, session);
@@ -308,15 +309,11 @@ process_request = function(request, session)
 	request.stanzas = {};
 	table.insert(session.outbound_requests, request);
 
-	if session.bosh_wait then
-		request.reply_before = os_time() + session.bosh_wait;
-		waiting_requests[request] = true;
-	end
-
 	-- Session was marked as inactive, since we have
 	-- a request open now, unmark it
-	if inactive_sessions[session] then
-		inactive_sessions[session] = nil;
+	inactive_sessions[session] = nil;
+	if not active_sessions[session] then
+		active_sessions[session] = os_time();
 	end
 
 	local is_restart_request = request.attr["xbosh:restart"] and (tostring(request.attr["xbosh:restart"]) == "1" or tostring(request.attr["xbosh:restart"]) == "true");
@@ -598,13 +595,17 @@ function on_timer()
 	-- log("debug", "Checking for requests soon to timeout...");
 	-- Identify requests timing out within the next few seconds
 	local now = os_time() + 3;
-	for request in pairs(waiting_requests) do
-		if request.reply_before <= now then
+	-- Check active sessions (sessions with at least one outbound request) whose
+	-- 'wait' period is expiring.
+	for session, active_since in pairs(active_sessions) do
+		local reply_before = active_since + session.bosh_wait;
+		if reply_before <= now then
+			local request = session.outbound_requests[1];
 			log("debug", "%s was soon to timeout, sending empty response", request.id);
 			-- Send empty response to let the
 			-- client know we're still here
 			if request.conn then
-				sessions[request.sid].send("");
+				session.send("");
 			end
 		end
 	end
