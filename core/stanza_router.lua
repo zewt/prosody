@@ -29,7 +29,7 @@ local function handle_unhandled_stanza(host, origin, stanza)
 			return true;
 		end
 	end
-	if stanza.attr.xmlns == nil then
+	if xmlns == "jabber:client" then
 		log("debug", "Unhandled %s stanza: %s; xmlns=%s", origin.type, stanza.name, xmlns); -- we didn't handle it
 		if stanza.attr.type ~= "error" and stanza.attr.type ~= "result" then
 			origin.send(st.error_reply(stanza, "cancel", "service-unavailable"));
