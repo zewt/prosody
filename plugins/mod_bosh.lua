@@ -111,6 +111,8 @@ local function request_finished(request, session)
 	local outbound_requests = session.outbound_requests;
 	remove_request(session.outbound_requests);
 
+	session.previous_rid_responded = request.rid
+
 	-- If this session has no outbound requests pending, mark it inactive.  Buffered
 	-- inbound requests that can't be handled yet don't mark the session active, so
 	-- ignore them.
@@ -243,17 +245,18 @@ function handle_request(method, body, request)
 		end
 
 		-- This request is ready to be handled.  Remove it from the queue, and process it.
-		log("debug", "handling inbound rid %i", in_req.rid);
+		log("debug", "handling inbound rid %i, last response was to %i", in_req.rid, session.previous_rid_responded);
 		table.remove(session.inbound_requests, 1);
 
-		if in_req.rid <= session.previous_rid_processed then
-			-- This is an old RID.  It may be a rerequest (XEP-0124 sec14.3).  If we have
-			-- a copy of the requested response, send it again.  Otherwise, terminate the
-			-- session.
+		if in_req.rid <= session.previous_rid_responded then
+			-- This is an old RID that we've already responded to.  It may be a rerequest
+			-- (XEP-0124 sec14.3).  If we have a copy of the requested response, send it
+			-- again.  Otherwise, terminate the session.
 			log("debug", "rid %i is in the past", in_req.rid);
 			local original_response = session.sent_responses.responses[in_req.rid];
 			if original_response == nil then
 				-- The client requested a RID that we no longer have a copy of.
+				log("info", "requested old rid %i that we no longer have", in_req.rid);
 				terminateWithError(in_req, session, "item-not-found");
 				return true;
 			end
@@ -467,6 +470,7 @@ create_session = function(request)
 		log = logger.init("bosh"..sid),	secure = consider_bosh_secure or request.secure,
 		ip = get_ip_from_request(request),
 		previous_rid_processed = tonumber(rid),
+		previous_rid_responded = 0,
 	};
 	if attr.hold ~= nil then
 		local hold = tonumber(attr.hold);
