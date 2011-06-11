@@ -587,6 +587,11 @@ function stream_callbacks.error(request, error)
 	end
 	
 	local session = sessions[request.sid];
+	if session == nil then
+		-- The session is already closed.
+		return;
+	end
+
 	if error == "stream-error" then -- Remote stream error, we close normally
 		session:close();
 	else
