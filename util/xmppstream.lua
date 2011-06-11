@@ -108,9 +108,6 @@ function new_sax_handlers(session, stream_callbacks)
 				end
 				return;
 			end
-			if curr_ns == "jabber:client" and name ~= "iq" and name ~= "presence" and name ~= "message" then
-				cb_error(session, "invalid-top-level-element");
-			end
 			
 			stanza = setmetatable({ name = name, attr = attr, tags = {} }, stanza_mt);
 		else -- we are inside a stanza, so add a tag
