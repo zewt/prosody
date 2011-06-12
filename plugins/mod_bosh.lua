@@ -488,7 +488,7 @@ create_session = function(request)
 	session.log("debug", "BOSH session created for request from %s", session.ip);
 	log("info", "New BOSH session, assigned it sid '%s'", sid);
 	local r, send_buffer = session.outbound_requests, session.send_buffer;
-	local response = { headers = get_headers(session) }
+	local response_headers = get_headers(session);
 	function session.send(s)
 		-- We need to ensure that outgoing stanzas have the jabber:client xmlns
 		if s.attr and not s.attr.xmlns then
@@ -514,6 +514,7 @@ create_session = function(request)
 			request_finished(oldest_request, session);
 
 			log("debug", "We have an open request, so sending on that");
+			local response = { headers = response_headers };
 			response.body = t_concat({
 				"<body xmlns='http://jabber.org/protocol/httpbind' ",
 				session.bosh_terminate and "type='terminate' " or "",
